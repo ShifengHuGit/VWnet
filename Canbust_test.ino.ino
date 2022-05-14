@@ -1,35 +1,7 @@
-/*  send a frame from can bus
-    support@longan-labs.cc
-    
-    CAN Baudrate,
-    
-    #define CAN_5KBPS           1
-    #define CAN_10KBPS          2
-    #define CAN_20KBPS          3
-    #define CAN_25KBPS          4 
-    #define CAN_31K25BPS        5
-    #define CAN_33KBPS          6
-    #define CAN_40KBPS          7
-    #define CAN_50KBPS          8
-    #define CAN_80KBPS          9
-    #define CAN_83K3BPS         10
-    #define CAN_95KBPS          11
-    #define CAN_100KBPS         12
-    #define CAN_125KBPS         13
-    #define CAN_200KBPS         14
-    #define CAN_250KBPS         15
-    #define CAN_500KBPS         16
-    #define CAN_666KBPS         17
-    #define CAN_1000KBPS        18
-    
-    CANBed V1: https://www.longan-labs.cc/1030008.html
-    CANBed M0: https://www.longan-labs.cc/1030014.html
-    CAN Bus Shield: https://www.longan-labs.cc/1030016.html
-    OBD-II CAN Bus GPS Dev Kit: https://www.longan-labs.cc/1030003.html
-*/
-   
 #include <mcp_can.h>
 #include <SPI.h>
+#include "base64.hpp"
+#include "CANFunction.h"
 #include <ArduinoJson.h>
 
 /* Please modify SPI_CS_PIN to adapt to different baords.
@@ -42,37 +14,44 @@
    OBD-2G Dev Kit   - 9
    Hud Dev Kit      - 9
 */
-
-#define SPI_CS_PIN  17 
-#define MSGINFO "a"
-
-unsigned char flagRecv = 0;
-unsigned char len = 0;
-unsigned char buf[8];
-char str[20];
-int J_ID, J_MA, J_FC, J_ERPM, J_EPW,J_ETP, J_ETH, J_BV, J_GA, J_GC, J_CS, J_CM, J_CTMP, J_BP, J_GP;
-StaticJsonDocument<100> NetStr;
+#define SPI_CS_PIN  17
+const int LED  = 23;
+MCP_CAN CAN(SPI_CS_PIN);// Set CS pin
+CANFunction CANUDS(&CAN, false);
+struct Message_t txMsg, rxMsg;
+int pid =0;
+int count = 0;
+unsigned char ShortCodeMsg_0x710_StartSession[2] =    { 0x10, 0x03 };
 
 
-
-#define CANMSGID_ECU_ENG                  0x07E8
-#define CANMSGID_TESTER_ENG               0x07E0
-#define CANMSGID_ECU_GEARBOX              0x07E9
-#define CANMSGID_TESTER_GEARBOX           0x07E1
-#define CANMSGID_ECU_SESSION              0x077A
-#define CANMSGID_TESTER_SESSION           0x0710
-//17F00010
-
-
-MCP_CAN CAN(SPI_CS_PIN);                                    // Set CS pin
+struct UDS_Cmd CmdList[18] = {
+{ 0,  "Session Control",      2,   { 0x10, 0x03, 0x00} , CANMSGID_TESTER_SESSION, CANMSGID_ECU_SESSION, 0  },
+{ 0,  "Control",             2,    { 0x00, 0x01, 0x00} , CANMSGID_TESTER_GPS,   CANMSGID_ECU_GPS, 0  },
+{ 1,  "GetEngRPM",           3,    { 0x22, 0xf4, 0x0C} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 2,  "GetEngWLD",         3,      { 0x22, 0xf4, 0x43} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 3,  "GetEngSTS",         3,      { 0x22, 0x39, 0x53} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 4,  "GetEngFuzai",     3,        { 0x22, 0x11, 0xE9} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 5 , "GetCoolantTemp",    3,      { 0x22, 0xf4, 0x05} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 6,  "GetThroPST",      3,        { 0x22, 0xf4, 0x11} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 7,  "GetOutsideTemp",  3,        { 0x22, 0xf4, 0x46} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 8,  "GetMileAge",      3,        { 0x22, 0x29, 0x5A} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 9,  "GetTubroPrs",     3,        { 0x22, 0x20, 0x29} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 10, "GetOilLevel",     3,        { 0x22, 0x20, 0x06} , CANMSGID_TESTER_ENG,   CANMSGID_ECU_ENG, 0  },
+{ 11, "GPSInfo",         3,        { 0x22, 0x24, 0x30} , CANMSGID_TESTER_GPS,   CANMSGID_ECU_GPS, 1  },
+{ 12, "GPSDate"     ,    3,        { 0x22, 0x22, 0xB3} , CANMSGID_TESTER_GPS,   CANMSGID_ECU_GPS, 1  },
+{ 13, "PadelPst",      3,          { 0x22, 0x38, 0x08} , CANMSGID_TESTER_GEARBOX, CANMSGID_ECU_GEARBOX, 0  },
+{ 14, "CkpSpeed",      3,          { 0x22, 0x22, 0xD2} , CANMSGID_TESTER_COCKPIT, CANMSGID_ECU_COCKPIT, 0  },
+{ 15, "Tml30Vlt",      3,          { 0x22, 0x02, 0x86} , CANMSGID_TESTER_COCKPIT, CANMSGID_ECU_COCKPIT, 0  },
+{ 16, "CkpEngTmp",     3,          { 0x22, 0x20, 0x2F} , CANMSGID_TESTER_COCKPIT, CANMSGID_ECU_COCKPIT, 0  } 
+};
 
 //
 // SEND AT CMD to LTE via SERIAL1 Port
 // E.G. "AT+CSP";
-// 
+//
+ 
 String SendATCmd(char* CMD)
 {
- 
 
   unsigned char LTE_ERR[9] = {0x0d, 0x0a, 0x45, 0x52, 0x52, 0x4f, 0x52, 0x0d, 0x0a};
   String LTE_Resp;
@@ -84,7 +63,7 @@ String SendATCmd(char* CMD)
   if(Serial1.available() > 0)
       { 
         LTE_Resp = Serial1.readString();
-        Serial.println(LTE_Resp);
+        //Serial.println(LTE_Resp);
         if(LTE_Resp == LTE_ERR )
         {return "ERROR";}
         else
@@ -100,15 +79,16 @@ String SendATCmd(char* CMD)
 //
 void initLTE()
 {
-  Serial.println("Start to Init the LTE Module");
+  pinMode(LED_BUILTIN, OUTPUT);
+  //Serial.println("Start to Init the LTE Module");
   String ResponseString;
   
   // LTE Module needs more than 10s to complete its initial phase.
-  delay(5000);
+  delay(7000);
   if(Serial1.available() > 0)
       { 
         ResponseString = Serial1.readString();
-        Serial.println(ResponseString);
+    //    Serial.println(ResponseString);
         
       }
       
@@ -118,26 +98,21 @@ void initLTE()
   delay(500);
  // if(SendATCmd("AT+CREG") =="+OK=1")
   {
-    Serial.println("Register OK");
+    //Serial.println("Register OK");
   }
 
- 
-
-  Serial.println(SendATCmd("AT+CSQ"));
-  Serial.println(SendATCmd("AT+SOCK1"));
-  Serial.println(SendATCmd("AT+LBS"));
-  Serial.println(SendATCmd("AT+LINKSTA1"));
+  //Serial.println(SendATCmd("AT+CSQ"));
+  //Serial.println(SendATCmd("AT+SOCK1"));
+  //Serial.println(SendATCmd("AT+LBS"));
+  //Serial.println(SendATCmd("AT+LINKSTA1"));
 
   //Exit AT Config Mode;
   Serial1.write("AT+EXAT\r\n");
 
-
-
-
   while(1){
       
       Serial1.write("INIT");
-      Serial.println("Initialize the Session with Cloud Server, waitting the INIT_ACK");
+    //  Serial.println("Initialize the Session with Cloud Server, waitting the INIT_ACK");
       delay(800);
       if(Serial1.available() > 0)
       { 
@@ -145,7 +120,7 @@ void initLTE()
         ResponseString = Serial1.readString();
         if (ResponseString == "INIT_ACK")
         {
-          Serial.println("Session bulit, ready to talk with Cloud Server!");
+      //    Serial.println("Session bulit, ready to talk with Cloud Server!");
           Serial1.write("ACK");
           break;
         }  
@@ -156,21 +131,15 @@ void initLTE()
 
 
 
-
-
 void  initVWCAN()
 {
   Serial.println("Initialize CAN BUS!");
-  int count=0;
-  char R_SIDCode = 0x00;
-  unsigned char SessionFrameTX[8] = {0x02, 0x10, 0x03, 0x55, 0x55,0x55,0x55,0x55};
+
   while (CAN_OK != CAN.begin(CAN_500KBPS))    // init can bus : baudrate = 500k
     {
         Serial.println("CAN BUS FAIL!");
         delay(100);
-    }
-
-    
+    }  
     /*
      * set mask, set both the mask to 0x3ff
      */
@@ -179,14 +148,14 @@ void  initVWCAN()
     /*
      * set filter, we can receive id from 0x04 ~ 0x09
      */
-    CAN.init_Filt(0, 0, 0x07E8);                          // there are 6 filter in mcp2515
-    CAN.init_Filt(1, 0, 0x07E9);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(0, 0, CANMSGID_ECU_SESSION);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(1, 0, CANMSGID_ECU_ENG);                          // there are 6 filter in mcp2515
     
     CAN.init_Mask(1, 0, 0x0700);
-    CAN.init_Filt(2, 0, 0x077A);                          // there are 6 filter in mcp2515
-    CAN.init_Filt(3, 0, 0x0710);                          // there are 6 filter in mcp2515
-    CAN.init_Filt(4, 0, 0x0720);                          // there are 6 filter in mcp2515
-    CAN.init_Filt(5, 0, 0x0730);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(2, 0, CANMSGID_ECU_GEARBOX);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(3, 0, CANMSGID_ECU_GPS);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(4, 0, CANMSGID_ECU_COCKPIT);                          // there are 6 filter in mcp2515
+    CAN.init_Filt(5, 0, 0x0701);                          // there are 6 filter in mcp2515
 
 
     // Send Initialize Session CAN request
@@ -197,237 +166,144 @@ void  initVWCAN()
     // 
       // Send this to CAN Bus
       // 发送 进入EXT会话的请求
-      CAN.sendMsgBuf(CANMSGID_TESTER_SESSION, 0, 8, SessionFrameTX);
+
+    txMsg.tx_id = CANMSGID_TESTER_SESSION;
+    txMsg.rx_id = CANMSGID_ECU_SESSION;
+    txMsg.len = sizeof(ShortCodeMsg_0x710_StartSession);
+    memcpy(txMsg.Buffer,ShortCodeMsg_0x710_StartSession,txMsg.len);
   
-      // Logging the Request
-      Serial.print("U-->C:");
-      for(int i = 0; i<8; i++)    // print the data
-          {
-              Serial.print("0x");
-              Serial.print(SessionFrameTX[i], HEX);
-              Serial.print("\t");
-          }
-       Serial.println("<---END---");
-
-
-
-    // Check whether the Response coming.
-    //
-
-  while(1)
-  {
-
-      while(CAN_MSGAVAIL != CAN.checkReceive());
-    /*  {
-        Serial.println("No Data!");
-        delay(1500);
-      }*/
+    rxMsg.tx_id = CANMSGID_TESTER_SESSION;
+    rxMsg.rx_id = CANMSGID_ECU_SESSION;
       
-      CAN.readMsgBuf(&len, buf);    // read data,  len: data length, buf: data buf
-
-       if(CAN.getCanId() != 0x77A)
-       {
-          Serial.print("ID not match: ");
-          Serial.println(CAN.getCanId(),HEX);
-          continue;
-       }
-       else
-       {
-        
-          Serial.print("U<--C: ID:");
-          Serial.println(CAN.getCanId(),HEX);
-          Serial.print(" Len:");
-          Serial.println(len);
-          //记录Response结果
-          for(int i = 0; i<8; i++)    // print the data
-          {
-              Serial.print("0x");
-              Serial.print(buf[i], HEX);
-              Serial.print("\t");
-          }
-          Serial.println(">---END---");
-
-  
-          R_SIDCode = buf[1];
-          
-          if(R_SIDCode == 0x7f || R_SIDCode != 0x50 || buf[2] != 0x03)
-          {
-             Serial.println("Retry Build the session");
-             Serial.println("Failed to initialize the CAN Session ! ");
-             CAN.sendMsgBuf(CANMSGID_TESTER_SESSION, 0, 8, SessionFrameTX);
-             continue;
-          }
-          else
-          {
-             Serial.println("Successfully Initialize the CAN Session!");
-             break;
-          }
-
-        }
-  }
-    
-}
-
-int Hander_ENG_RPM(char H, char L)
-{
-  //( 0x0A * 256 + 0xF9 ) / 4 
-  return (((int)H*256+(int)L)/4);
+    CANUDS.send(&txMsg);
+    CANUDS.receive(&rxMsg);
+    CANUDS.print_buffer(rxMsg.rx_id, rxMsg.Buffer, rxMsg.len);
+    //CanID-【7a 07】 Can Data->【 06-|50 03 00 32 01 f4 aa |] 
+    if(rxMsg.Buffer[0] != 0x50)
+    {
+      Serial.println("Failed to initialize the CAN Session !!!! ");
+      exit(0);
+     }
+     else
+     {
+      Serial.println("Successfully initialize the CAN Session ~!!~ ");
+     }
 }
 
 void setup()
 
-{    
+{  
+ 
+  Serial1.begin(115200);
+  while(!Serial1);
+ // Serial.begin(115200);
+ // while(!Serial);
 
-    J_ID=0;
-    J_MA=2084; J_FC=40; J_ERPM=0; J_EPW=234; J_ETP=23; J_ETH=50; J_BV=11; J_GA=130; J_GC=324; J_CS=90; J_CM=1; J_CTMP=23; J_BP=13; J_GP=3;
-    NetStr["Trip_ID"]="";
-    NetStr["Package_ID"]="";
-    NetStr["Time_Stamp"]="";
-    NetStr["MileAge"];
-    NetStr["FuelCost"];
-    NetStr["Engine_RPM"];
-    NetStr["Engine_Power"];
-    NetStr["Engine_Temp"];
-    NetStr["Engine_Throttle"];
-    NetStr["Battery_Volt"];
-    JsonArray GPSdata = NetStr.createNestedArray("GPSdata");
-    GPSdata.add(J_GA);
-    GPSdata.add(J_GA);
-    GPSdata.add(J_GA);
-    GPSdata.add(J_GA);
-    
-    NetStr["Car_Speed"];
-    NetStr["Car_Mode"];
-    NetStr["Car_Temp"];
-    NetStr["Car_BreakPostion"];
-    NetStr["GearBox_Postion"];
+  txMsg.Buffer = (uint8_t *)calloc(MAX_MSGBUF, sizeof(uint8_t));
+  rxMsg.Buffer = (uint8_t *)calloc(MAX_MSGBUF, sizeof(uint8_t));
+  initLTE();
 
-    serializeJson(NetStr, Serial1);
+  digitalWrite(LED_BUILTIN, HIGH);
+  
+  initVWCAN();
+  delay(200);
 
-    
-    String ResponseString;
-
-    Serial1.begin(115200);
-    while(!Serial1);
-    Serial.begin(115200);
-    while(!Serial);
-
-    //Initilaize the CAN session.
-    // Enter the Extend Session : 0x02 0x10 0x03 X X X X;
-   
-
-    initLTE();
-
-    initVWCAN();
 }
-
 
 
 void loop()
 {
+  
+  delay(100);
+  StaticJsonDocument<384> doc;
+  unsigned char tmp[5];
+  if(count%2==0){
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+/*
+    doc["PID"] = pid;
+    doc["GetEngRPM"] = "AAA=";
+    doc["GetEngWLD"] = "AAA=";
+    doc["GetEngSTS"] = "AA==";
+    doc["GetEngFuzai"] = "AA==";
+    doc["GetCoolantTemp"] = "QQ==";
+    doc["GetThroPST"] = "KA==";
+    doc["GetOutsideTemp"] = "OQ==";
+    doc["GetMileAge"] = "AJVN";
+    doc["GetTubroPrs"] = "A/Q=";
+    doc["GetOilLevel"] ="AFw=";
+    doc["GPSInfo"] = "121.32'27.6\"E  38.53'15.7\"N ";
+    doc["GPSDate"] = "ARYFCQkpAA==";
+    doc["PadelPst"] = "CA==";
+    doc["CkpSpeed"] = "AAA=";
+    doc["Tml30Vlt"] = "eQ==";
+    doc["CkpEngTmp"] = "UQ==";
 
-    J_ID=J_ID+1;
-    int R_Flag=0;
-    delay(1000);
-    String TempStr;
-    char R_SIDCode;
-    int rpm=0;
-    char JsonStr[1024];
-    //TempStr="{\"Trip_ID\" : \"Yndd7Ddndsy\",\"Package_ID\" : 222,\"Time_Stamp\" : \"2012-04-09 12:13:44.34\",\"MileAge\" : 2234 ,\"FuelCost\": 2234,\"Engine_RPM\": 2234,\"Engine_Power\": 2234,\"Engine_Temp\": 98,\"Engine_Throttle\": 25,\"Battery_Volt\": 15.5,\"GPS_Longitude\": \"ABCDEF\",\"GPS_Latitude\": \"GHIJKLMN\",\"GPS_Altitude\": 8848,\"GPS_Course\": 354,\"Car_Speed\": 140,\"Car_Mode\": 3,\"Car_Temp\": 24.5,\"Car_BreakPostion\": 70,\"GearBox_Postion\": 23}";
-    //Serial1.println(TempStr);
-    Serial.println(TempStr);
-     //【 03-|22 f4 0c 55 55 55 55 |]
-     char RPM_CODE[8]={0x03, 0x22, 0xF4,0x0C, 0x55,0x55,0x55,0x55};
+    pid++;
+    //serializeJson(doc, Serial);
+    serializeJson(doc, Serial1);
+  */
 
+    doc["PID"] = pid;
 
-    CAN.sendMsgBuf(CANMSGID_TESTER_ENG, 0, 8, RPM_CODE);
-
-    
-     while(1)
+    for(int x=2; x<18; x++)
+    {
+      
+      txMsg.tx_id=CmdList[x].tx_id;
+      txMsg.rx_id=CmdList[x].rx_id;
+      txMsg.len = CmdList[x].len; //SID+IDs
+      rxMsg.tx_id = CmdList[x].tx_id;
+      rxMsg.rx_id = CmdList[x].rx_id;
+      memcpy(txMsg.Buffer, CmdList[x].Code,   txMsg.len);
+      
+      CANUDS.send(&txMsg);
+      
+      CANUDS.receive(&rxMsg);
+      
+      if(CmdList[x].FrameFlag)
       {
-    
-          while(CAN_MSGAVAIL != CAN.checkReceive());
-        /*  {
-            Serial.println("No Data!");
-            delay(1500);
-          }*/
-          
-          CAN.readMsgBuf(&len, buf);    // read data,  len: data length, buf: data buf
-    
-           if(CAN.getCanId() != CANMSGID_ECU_ENG)
-           {
-              Serial.print("ID not match: ");
-              Serial.println(CAN.getCanId(),HEX);
-              break;
-              //continue;
-           }
-           else
-           {
-            
-              Serial.print("U<--C: ID:");
-              Serial.println(CAN.getCanId(),HEX);
-              Serial.print(" Len:");
-              Serial.println(len);
-              //记录Response结果
-              for(int i = 0; i<8; i++)    // print the data
-              {
-                  Serial.print("0x");
-                  Serial.print(buf[i], HEX);
-                  Serial.print("\t");
+        //CANUDS.print_buffer(rxMsg.rx_id, rxMsg.Buffer, rxMsg.len);
+        CANUDS.receive(&rxMsg);
+        /*18:08:18.512 -> Buffer: 7DD [31] 62 24 30 31 32 31 B0 33 32 27 32 39 2E 34 22 45 20 20 33 38 B0 35 33 27 31 35 2E 35 22 4E 20 
+          18:08:18.760 -> Buffer: 7DD [3] 7F 22 78 
+          18:08:18.798 -> Buffer: 7DD [10] 62 22 B3 01 16 05 07 0A 08 12 
+*/
+        if(CmdList[x].id == 12){ // GPS date
+          unsigned char LongTmp[9];
+          encode_base64(rxMsg.Buffer+3, rxMsg.len-3, LongTmp);
+          doc[CmdList[x].desc] = LongTmp;
+        }
+        else
+        { // GPS info  , including a Non-Standard ASCII 0xB0, this not able to be supported to decode by Python Jsonload.
+          for(int i = 3; i<rxMsg.len; i++)
+          {
+              if(rxMsg.Buffer[i]==0xB0 || rxMsg.Buffer[i]==0x27 || rxMsg.Buffer[i]==0x22){
+                rxMsg.Buffer[i]=0x2E;
+              }else{ 
+                continue;
               }
-              Serial.println(">---END---");
-    
-      
-              R_SIDCode = buf[1];
-
-
-              
-              if(R_SIDCode == 0x7f || R_SIDCode != 0x62 )
-              {
-                 Serial.println("I Can not reply you");
-                 
-                 //CAN.sendMsgBuf(CANMSGID_TESTER_ENG, 0, 8, RPM_CODE);
-                 continue;
-              }
-              else
-              {
-                 Serial.println("Responsed!--->");
-                 J_ERPM = Hander_ENG_RPM(buf[4],buf[5]);
-                 break;
-              }
-    
-            }
+          }
+          doc[CmdList[x].desc] = rxMsg.Buffer+3;
+        }
+       }
+      else
+      {
+        encode_base64(rxMsg.Buffer+3, rxMsg.len-3, tmp);
+        doc[CmdList[x].desc] = tmp;
       }
+      delay(55);
+     }
+     pid++;
+     
+     /*TODO - Json it and send it via LTE */
 
-      
- 
- sprintf(JsonStr,  
-"{\
-\"Trip_ID\" : \"DummyStr\",\
-\"Package_ID\" : %d,\
-\"Time_Stamp\" : \"2012-04-09 12:13:44.34\",\
-\"MileAge\" : %d ,\
-\"FuelCost\": %d,\
-\"Engine_RPM\": %d,\
-\"Engine_Power\": %d,\
-\"Engine_Temp\": %d,\
-\"Engine_Throttle\": %d,\
-\"Battery_Volt\": %d,\
-\"GPS_Longitude\": \"ABCDEF\",\
-\"GPS_Latitude\": \"GHIJKLMN\",\
-\"GPS_Altitude\": %d,\
-\"GPS_Course\": %d,\
-\"Car_Speed\": %d,\
-\"Car_Mode\": %d,\
-\"Car_Temp\": %d,\
-\"Car_BreakPostion\": %d,\
-\"GearBox_Postion\": %d\
-}",    J_ID, J_MA, J_FC, J_ERPM, J_EPW,J_ETP, J_ETH, J_BV, J_GA, J_GC, J_CS, J_CM, J_CTMP, J_BP, J_GP);
+    serializeJson(doc, Serial1);
+    digitalWrite(LED_BUILTIN, LOW);
+    count++;
+
     
-    Serial.println(JsonStr);
-    Serial1.println(JsonStr);
-    delay(50);                       // send data per 100ms
 }
+
 
 
 
